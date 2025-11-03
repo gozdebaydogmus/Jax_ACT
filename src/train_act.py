@@ -87,6 +87,7 @@ def train_step(params, opt_state, batch, beta_scalar, noise_keys):
         # finite flags
         rec_ok = jnp.all(jnp.isfinite(rec))
         kl_ok  = jnp.all(jnp.isfinite(kl))
+
         return loss, {"rec": rec_mean, "kl": kl_mean, "rec_ok": rec_ok, "kl_ok": kl_ok}
 
     # loss, aux metrics + grad

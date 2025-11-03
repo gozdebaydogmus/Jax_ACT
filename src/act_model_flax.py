@@ -224,7 +224,7 @@ class ACTModel(nn.Module):
             eps = jax.random.normal(self.make_rng("noise"), mu_q.shape)
             z = mu_q + std_q * eps
             # KL(q||p) as a scalar per-sample
-            kl = jnp.sum((ls_q - ls_p) + (std_q**2 + (mu_q - mu_p)**2) / (2 * std_p**2) - 0.5, axis=-1)  # [B]
+            kl = jnp.sum((ls_p - ls_q) + (std_q**2 + (mu_q - mu_p)**2) / (2 * std_p**2) - 0.5, axis=-1)  # [B]
         else:
             z = mu_p
             kl = jnp.zeros((images.shape[0],), images.dtype)
