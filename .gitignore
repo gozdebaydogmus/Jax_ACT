@@ -1,0 +1,29 @@
+# venv & build artifacts
+.venv/
+*.egg-info/
+jax_act.egg-info/
+build/
+dist/
+
+# temporary/cache
+__pycache__/
+*.py[cod]
+*.log
+.cache/
+wandb/
+
+# project-specific exclusions
+old/
+logs/
+src/logs/
+train_act_100k.sbatch
+*.sbatch
+
+# exclude evaluation/inference scripts (not final)
+src/eval_act_metrics.py
+src/infer_act.py
+
+# IDE/editor
+.vscode/
+.idea/
+.ipynb_checkpoints/

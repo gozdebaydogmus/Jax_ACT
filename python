@@ -1,0 +1,70 @@
+import jax, jax.numpy as jnp
+import flax.linen as nn
+
+D_EMB, Z_DIM = 256, 32
+
+class ImgEnc(nn.Module):
+    @nn.compact
+    def __call__(self, x):  # [B,T,H,W,9]
+        B,T,H,W,C = x.shape
+        y = x.reshape(B*T, H, W, C)
+        y = nn.Conv(32,(5,5),2)(y); y = nn.relu(y)
+        y = nn.Conv(64,(3,3),2)(y); y = nn.relu(y)
+        y = nn.Conv(128,(3,3),2)(y); y = nn.relu(y)
+        y = y.mean(axis=(1,2))
+        y = nn.Dense(D_EMB)(y)
+        return y.reshape(B,T,D_EMB)
+
+class StateEnc(nn.Module):
+    @nn.compact
+    def __call__(self, joints, gripper):  # [B,T,J], [B,T,1]
+        x = jnp.concatenate([joints, gripper], -1)
+        x = nn.Dense(128)(x); x = nn.relu(x)
+        x = nn.Dense(D_EMB)(x)
+        return x  # [B,T,D]
+
+class Heads(nn.Module):
+    out_dim: int
+    @nn.compact
+    def __call__(self, x):
+        x = nn.Dense(256)(x); x = nn.tanh(x)
+        return nn.Dense(self.out_dim)(x)
+
+class CausalDecoder(nn.Module):
+    out_dim: int; length: int  # A, H
+    @nn.compact
+    def __call__(self, ctx, z):  # ctx=[B,Tctx,D], z=[B,Z]
+        B = ctx.shape[0]
+        zt   = jnp.tile(z[:,None,:], [1, self.length, 1])         # [B,H,Z]
+        ctxm = jnp.mean(ctx, axis=1, keepdims=True).repeat(self.length, 1)  # [B,H,D]
+        x = jnp.concatenate([ctxm, zt], -1)                        # [B,H,D+Z]
+        x = nn.Dense(256)(x); x = nn.relu(x)
+        x = nn.SelfAttention(num_heads=4, qkv_features=256)(x)
+        return nn.Dense(self.out_dim)(x)                           # [B,H,A]
+
+class ACTModel(nn.Module):
+    action_dim: int; chunk_len: int
+    @nn.compact
+    def __call__(self, images, joints, gripper, actions=None, train=True, beta=1e-3):
+        x_img = ImgEnc()(images)
+        x_sta = StateEnc()(joints, gripper)
+        ctx   = x_img + x_sta
+        ctxm  = jnp.mean(ctx, axis=1)                              # [B,D]
+
+        # p(z|O): prior
+        prior = Heads(2*Z_DIM)(ctxm)
+        mu_p, ls_p = jnp.split(prior, 2, -1); std_p = jnp.exp(ls_p)
+
+        if train and actions is not None:
+            tgt = actions.reshape(actions.shape[0], -1)            # [B,H*A]
+            post = Heads(2*Z_DIM)(jnp.concatenate([ctxm, tgt], -1))
+            mu_q, ls_q = jnp.split(post, 2, -1); std_q = jnp.exp(ls_q)
+            eps = jax.random.normal(self.make_rng("noise"), mu_q.shape)
+            z = mu_q + std_q * eps
+            kl = jnp.sum((ls_q - ls_p) + (std_q**2 + (mu_q-mu_p)**2)/(2*std_p**2) - 0.5, axis=-1)
+        else:
+            z = mu_p
+            kl = jnp.zeros((images.shape[0],), images.dtype)
+
+        pred = CausalDecoder(self.action_dim, self.chunk_len)(ctx, z)  # [B,H,A]
+        return pred, kl
