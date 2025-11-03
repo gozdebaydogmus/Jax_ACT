@@ -8,7 +8,21 @@ episodes = tfds.load(DS, split="train", shuffle_files=False, data_dir=data_dir)
 
 # First episode
 ep = next(iter(episodes))
-steps = ep["steps"]  # 
+steps = ep["steps"] 
+
+
+
+data_dir = os.getenv("TFDS_DATA_DIR")
+ds = tfds.load("xgym_sweep_single", split="train", data_dir=data_dir)
+builder = tfds.builder("xgym_sweep_single", data_dir=data_dir)
+
+print()
+print("Dataset name:", builder.name)
+print("Version:", builder.version)
+print("Data dir:", builder.data_dir)
+print("Builder path:", builder.builder_dir)
+print()
+
 
 # First 16, just example
 low_list, side_list, wrist_list = [], [], []

@@ -8,6 +8,7 @@ def _to32(x):  return x.astype(np.float32)
 def iter_episode_steps(ds_name="xgym_sweep_single", split="train", data_dir=None):
     episodes = tfds.load(ds_name, split=split, shuffle_files=True, data_dir=data_dir)
     for ep in episodes:
+        print("DATASET EPISODES:", ep["steps"])
         yield ep["steps"]  # iterable dataset
 
 def episode_to_arrays(steps_iter, max_steps=None):

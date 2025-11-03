@@ -3,18 +3,20 @@ import jax, jax.numpy as jnp
 import flax.linen as nn
 
 # ------------------------------------------------------------
-# Dimensions
+# Shared dimensions
 # ------------------------------------------------------------
-D_EMB = 256   # Visual/State embedding dimension
-Z_DIM = 32    # Latent dimention (CVAE)
+D_EMB = 256   # Visual/State embedding size
+Z_DIM = 32    # Latent size (CVAE)
 
 # ============================================================
 #   ENCODER OPTIONS
 #   - ImgEncViTB16 : Pretrained ViT-B/16 (closest to original)
-#   - ImgEncViT    : MiniViT (scratch) – no internet
+#   - ImgEncViT    : MiniViT (scratch) – no internet required
 #   - ImgEncCNN    : Lightweight CNN – baseline
 # ============================================================
 
+# ---------------- (Optional) ViT-B/16 Pretrained ----------------
+# This encoder internally upsamples 64x64 to 224x224 (dataset unchanged).
 try:
     from transformers import FlaxViTModel
     _HAS_TRANSFORMERS = True
@@ -22,17 +24,17 @@ except Exception:
     _HAS_TRANSFORMERS = False
 
 class ImgEncViTB16(nn.Module):
-    """64x64 üç kamerayı (worm/side/wrist) 224'e upsample edip
-    HF FlaxViT-B/16 ile encode eder; çıktıyı D_EMB'e projekte eder.
+    """Upsamples three 64x64 camera views (worm/side/wrist) to 224 and
+    encodes them with HF FlaxViT-B/16; projects output to D_EMB.
     """
-    freeze_backbone: bool = True  # True: prevent gradients from flowing into the ViT backbone
+    freeze_backbone: bool = True  # True: do not send grads to ViT backbone
 
     @nn.compact
     def __call__(self, x):  # x: [B,T,64,64,9]
         if not _HAS_TRANSFORMERS:
             raise RuntimeError(
-                "enc_type='vit_b16' was selected, but the 'transformers' package was not found. "
-                "To install: uv pip install transformers>=4.44.0"
+                "enc_type='vit_b16' was selected but the 'transformers' package was not found. "
+                "Install with: uv pip install 'transformers>=4.44.0'"
             )
         B, T, H, W, C9 = x.shape
         assert C9 == 9, "ViT-B/16 encoder expects 3 cameras (9 channels: 3xRGB)."
@@ -49,7 +51,7 @@ class ImgEncViTB16(nn.Module):
         vit = FlaxViTModel.from_pretrained(
             "google/vit-base-patch16-224-in21k",
             dtype=jnp.float32,
-            add_pooling_layer=False,  # last_hidden_state
+            add_pooling_layer=False,  # returns last_hidden_state
         )
 
         outs = []
@@ -59,7 +61,7 @@ class ImgEncViTB16(nn.Module):
             pv = nhwc_to_nchw(v)  # [B*T,3,224,224]
             hs = vit(pixel_values=pv).last_hidden_state  # [B*T, N, 768]
             if self.freeze_backbone:
-                hs = jax.lax.stop_gradient(hs)  # prevent ViT grad
+                hs = jax.lax.stop_gradient(hs)  # stop grads to ViT
             feat = hs.mean(axis=1)  # token mean -> [B*T,768]
             outs.append(feat)
 
@@ -77,6 +79,7 @@ class PatchEmbed(nn.Module):
         B, Ht, Wt, C = y.shape
         y = y.reshape(B, Ht * Wt, C)  # [B, N, dim]
         return y, (Ht, Wt)
+
 
 class MLP(nn.Module):
     dim: int
@@ -106,7 +109,7 @@ class MiniViT(nn.Module):
     dim: int = D_EMB
     depth: int = 6
     num_heads: int = 8
-    patch: int = 16  # 64x64 -> 4*4=16 token
+    patch: int = 16  # 64x64 -> 4*4=16 tokens
     @nn.compact
     def __call__(self, x):  # [B, H, W, 3]
         tokens, _ = PatchEmbed(self.patch, self.dim)(x)  # [B, N, D]
@@ -118,10 +121,11 @@ class MiniViT(nn.Module):
         return h.mean(axis=1)  # [B, D]
 
 class ImgEncViT(nn.Module):
+    """Encodes three cameras with a shared MiniViT and averages them."""
     @nn.compact
     def __call__(self, x):  # [B,T,64,64,9]
         B, T, H, W, C9 = x.shape
-        assert C9 == 9,
+        assert C9 == 9, "MiniViT encoder expects 3 cameras (9 channels)."
         worm, side, wrist = x[..., 0:3], x[..., 3:6], x[..., 6:9]
         def bt(v): return v.reshape(B * T, H, W, 3)
         vit = MiniViT()   # shared
@@ -180,17 +184,18 @@ class CausalDecoder(nn.Module):
         return nn.Dense(self.out_dim)(x)                                     # [B,H,A]
 
 # ============================================================
-#   ACT MODEL (~)
+#   ACT MODEL (Close to the original)
 # ============================================================
 class ACTModel(nn.Module):
     action_dim: int            # A
     chunk_len: int             # H
     enc_type: str = "vit"      # "vit_b16" | "vit" | "cnn"
-    freeze_backbone: bool = True  # vit_b16 
+    freeze_backbone: bool = True  # for vit_b16
+
 
     @nn.compact
     def __call__(self, images, joints, gripper, actions=None, train: bool = True, beta: float = 1e-3):
-        # ---- Visual Encoder Selection ----
+        # ---- Visual encoder selection ----
         if self.enc_type == "vit_b16":
             x_img = ImgEncViTB16(freeze_backbone=self.freeze_backbone)(images)
         elif self.enc_type == "vit":
@@ -210,7 +215,7 @@ class ACTModel(nn.Module):
         mu_p, ls_p = jnp.split(prior, 2, -1)
         std_p = jnp.exp(ls_p)
 
-        # ---- Posterior q(z|O,A) (just training) ----
+        # ---- Posterior q(z|O,A) (training only) ----
         if train and actions is not None:
             tgt = actions.reshape(actions.shape[0], -1)  # [B,H*A]
             post = Heads(2 * Z_DIM)(jnp.concatenate([ctxm, tgt], -1))
@@ -218,7 +223,7 @@ class ACTModel(nn.Module):
             std_q = jnp.exp(ls_q)
             eps = jax.random.normal(self.make_rng("noise"), mu_q.shape)
             z = mu_q + std_q * eps
-            # KL(q||p) skaler for every sample
+            # KL(q||p) as a scalar per-sample
             kl = jnp.sum((ls_q - ls_p) + (std_q**2 + (mu_q - mu_p)**2) / (2 * std_p**2) - 0.5, axis=-1)  # [B]
         else:
             z = mu_p
