@@ -3,7 +3,7 @@ name = "jax-act"
 version = "0.1.0"
 description = "ACT (Action Chunking Transformer) training with JAX+Flax"
 dependencies = [
-    "jax[cuda12_pip]>=0.4.30",
+    "jax[cuda12,cuda12-pip]>=0.4.30",
     "flax>=0.8.2",
     "optax>=0.2.2",
     "tensorflow-datasets>=4.9.5",
@@ -11,4 +11,5 @@ dependencies = [
     "matplotlib",
     "ml-collections",
     "tqdm",
+    "jaxlib>=0.8.0",
 ]
